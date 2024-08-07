@@ -3,6 +3,7 @@ package sdl
 import (
 	"errors"
 	"fmt"
+	"unsafe"
 
 	// Packages
 	ffmpeg "github.com/mutablelogic/go-media/pkg/ffmpeg"
@@ -12,6 +13,14 @@ import (
 	. "github.com/djthorpe/go-errors"
 	. "github.com/mutablelogic/go-media"
 )
+
+////////////////////////////////////////////////////////////////////////////////
+// CGO
+
+/*
+extern void audio_callback(void* userdata, void* data, int len);
+*/
+import "C"
 
 //////////////////////////////////////////////////////////////////////////////
 // TYPES
@@ -23,24 +32,50 @@ type Audio struct {
 //////////////////////////////////////////////////////////////////////////////
 // GLOBALS
 
+/*
+	SDL Supported audio formats:
+	AUDIO_S8         // signed 8-bit samples
+	AUDIO_U8         // unsigned 8-bit samples
+	AUDIO_S16LSB     // signed 16-bit samples in little-endian byte order
+	AUDIO_S16MSB     // signed 16-bit samples in big-endian byte order
+	AUDIO_S16SYS     // signed 16-bit samples in native byte order
+	AUDIO_S16        // AUDIO_S16LSB
+	AUDIO_U16LSB     // unsigned 16-bit samples in little-endian byte order
+	AUDIO_U16MSB     // unsigned 16-bit samples in big-endian byte order
+	AUDIO_U16SYS     // unsigned 16-bit samples in native byte order
+	AUDIO_U16        // AUDIO_U16LSB
+	AUDIO_S32LSB     // 32-bit integer samples in little-endian byte order
+	AUDIO_S32MSB     // 32-bit integer samples in big-endian byte order
+	AUDIO_S32SYS     // 32-bit integer samples in native byte order
+	AUDIO_S32        // AUDIO_S32LSB
+	AUDIO_F32LSB     // 32-bit floating point samples in little-endian byte order
+	AUDIO_F32MSB     // 32-bit floating point samples in big-endian byte order
+	AUDIO_F32SYS     // 32-bit floating point samples in native byte order
+	AUDIO_F32        // AUDIO_F32LSB
+*/
+
 var (
 	mapAudio = map[string]sdl.AudioFormat{
-		"u8":   sdl.AUDIO_U8,
-		"s8":   sdl.AUDIO_S8,
-		"s16":  sdl.AUDIO_S16SYS,
-		"flt":  sdl.AUDIO_F32SYS,
-		"fltp": sdl.AUDIO_F32SYS,
+		"u8":  sdl.AUDIO_U8,
+		"s8":  sdl.AUDIO_S8,
+		"s16": sdl.AUDIO_S16,
+		"flt": sdl.AUDIO_F32,
 	}
 )
 
 //////////////////////////////////////////////////////////////////////////////
 // LIFECYCLE
 
-func (s *Context) NewAudio(par *ffmpeg.Par) (*Audio, error) {
-	if !par.Type().Is(AUDIO) {
+// NewAudio creates a new audio device with the specified parameters.
+func (s *Context) NewAudio(par *ffmpeg.Par, device *Device) (*Audio, error) {
+	if device == nil || !device.Type().Is(AUDIO) {
+		return nil, errors.New("invalid device type")
+	}
+	if par == nil || !par.Type().Is(AUDIO) {
 		return nil, errors.New("invalid audio parameters")
 	}
 
+	// Get the audio format
 	src_format := fmt.Sprint(par.SampleFormat())
 	format, exists := mapAudio[src_format]
 	if !exists {
@@ -51,14 +86,25 @@ func (s *Context) NewAudio(par *ffmpeg.Par) (*Audio, error) {
 	desired.Freq = int32(par.Samplerate())
 	desired.Format = format
 	desired.Channels = uint8(par.ChannelLayout().NumChannels())
-	desired.Samples = 1024
-	//desired.Callback = s.AudioCallback
+	desired.Samples = uint16(par.Samplerate())
+	desired.Callback = sdl.AudioCallback(C.audio_callback)
 
-	if device, err := sdl.OpenAudioDevice("", false, &desired, &obtained, 0); err != nil {
+	// Open audio device
+	var audio Audio
+	if id, err := sdl.OpenAudioDevice(device.Name(), device.Type().Is(INPUT), &desired, &obtained, 0); err != nil {
 		return nil, err
+	} else if desired.Freq != obtained.Freq {
+		return nil, ErrBadParameter.Withf("sample rate %d not supported", desired.Freq)
+	} else if desired.Format != obtained.Format {
+		return nil, ErrBadParameter.Withf("unsupported sample format %q", src_format)
+	} else if desired.Channels != obtained.Channels {
+		return nil, ErrBadParameter.Withf("number of channels %d not supported", desired.Channels)
 	} else {
-		return &Audio{device}, nil
+		audio.device = id
 	}
+
+	// Return success
+	return &audio, nil
 }
 
 func (a *Audio) Close() error {
@@ -69,4 +115,14 @@ func (a *Audio) Close() error {
 
 	// Return any errors
 	return result
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PRIVATE METHODS
+
+// callback function to capture audio data
+//
+//export audio_callback
+func audio_callback(_ unsafe.Pointer, data unsafe.Pointer, length C.int) {
+	fmt.Println("audio_callback", length)
 }

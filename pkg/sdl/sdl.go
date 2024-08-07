@@ -47,6 +47,25 @@ func (s *Context) Close() error {
 ///////////////////////////////////////////////////////////////////////////////
 // PUBLIC METHODS
 
+// Enumerate capture and playback devices. Currently works for audio only.
+func (ctx *Context) Devices(t Type) []*Device {
+	var devices []*Device
+	if t&(INPUT|OUTPUT) == 0 {
+		t |= INPUT | OUTPUT
+	}
+	if t.Is(AUDIO | INPUT) {
+		for i := 0; i < sdl.GetNumAudioDevices(true); i++ {
+			devices = append(devices, newDevice(AUDIO|INPUT, sdl.GetAudioDeviceName(i, true)))
+		}
+	}
+	if t.Is(AUDIO | OUTPUT) {
+		for i := 0; i < sdl.GetNumAudioDevices(false); i++ {
+			devices = append(devices, newDevice(AUDIO|OUTPUT, sdl.GetAudioDeviceName(i, false)))
+		}
+	}
+	return devices
+}
+
 func (ctx *Context) Register(fn func(userInfo unsafe.Pointer)) uint32 {
 	evt := sdl.RegisterEvents(1)
 	ctx.evt[evt] = fn
